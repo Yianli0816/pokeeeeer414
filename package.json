@@ -1,0 +1,16 @@
+{
+  "name": "414-poker-online",
+  "version": "1.0.0",
+  "description": "414 扑克牌四人组队升级游戏 - Node.js + Socket.IO 权威服务端联机版",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "socket.io": "^4.8.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

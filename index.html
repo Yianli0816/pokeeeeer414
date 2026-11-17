@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>414 扑克牌 · 联机对战</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
+    :root { --felt-dark: #072119; --felt-mid: #0d3b2e; --felt-light: #145240; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+    body {
+      margin: 0;
+      font-family: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at 50% 45%, var(--felt-light) 0%, var(--felt-mid) 52%, var(--felt-dark) 100%);
+      color: #f8fafc;
+      min-height: 100dvh;
+      overflow-x: hidden;
+    }
+    .poker-card {
+      position: relative; width: 58px; height: 84px;
+      background: linear-gradient(165deg, #ffffff 0%, #f5f2eb 100%);
+      border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.22);
+      box-shadow: 0 3px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.9);
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: 4px 5px; cursor: pointer;
+      transition: transform 0.14s cubic-bezier(0.2,0.8,0.2,1), box-shadow 0.14s ease, border-color 0.14s ease;
+      flex-shrink: 0;
+    }
+    @media (min-width: 768px) { .poker-card { width: 68px; height: 98px; border-radius: 9px; padding: 5px 6px; } }
+    .poker-card.selected {
+      transform: translateY(-18px); border: 2px solid #facc15;
+      box-shadow: 0 10px 20px rgba(250,204,21,0.35), 0 4px 10px rgba(0,0,0,0.45); z-index: 30 !important;
+    }
+    .poker-card:hover:not(.selected):not(.played-card) { transform: translateY(-6px); }
+    .poker-card.played-card { width: 46px; height: 66px; cursor: default; padding: 3px 4px; border-radius: 6px; }
+    @media (min-width: 768px) { .poker-card.played-card { width: 54px; height: 78px; } }
+    .poker-card.level-highlight { background: linear-gradient(165deg, #fffdf0 0%, #fef3c7 100%); border-color: #d97706; }
+    .level-pip {
+      position: absolute; top: 2px; right: 3px; font-size: 9px; font-weight: 800; color: #b45309;
+      background: rgba(251,191,36,0.35); padding: 0 3px; border-radius: 3px; line-height: 1.3;
+    }
+    .card-red { color: #dc2626; }
+    .card-black { color: #0f172a; }
+    .card-joker-big { color: #dc2626; }
+    .card-joker-small { color: #1e293b; }
+    .hand-scroll {
+      display: flex; align-items: flex-end; justify-content: center;
+      padding: 24px 16px 8px; overflow-x: auto;
+      scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent;
+    }
+    .hand-scroll .poker-card + .poker-card { margin-left: -28px; }
+    @media (min-width: 768px) { .hand-scroll .poker-card + .poker-card { margin-left: -30px; } }
+    .played-stack { display: flex; align-items: center; justify-content: center; }
+    .played-stack .poker-card + .poker-card { margin-left: -22px; }
+    .card-back-mini {
+      width: 18px; height: 26px; border-radius: 3px;
+      background: repeating-linear-gradient(45deg, #1e3a8a, #1e3a8a 3px, #1d4ed8 3px, #1d4ed8 6px);
+      border: 1px solid rgba(255,255,255,0.7); box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
+    @keyframes pulseGlow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.55); }
+      50% { box-shadow: 0 0 0 8px rgba(250,204,21,0); }
+    }
+    .active-turn-ring { animation: pulseGlow 1.6s infinite; border-color: #facc15 !important; }
+    @keyframes popIn { 0% { transform: scale(0.86); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+    .pop-in { animation: popIn 0.2s ease-out forwards; }
+  </style>
+</head>
+<body class="flex flex-col justify-between min-h-dvh">
+
+  <!-- Top HUD -->
+  <header class="w-full bg-black/35 backdrop-blur-md border-b border-white/10 px-3 py-2 flex flex-wrap items-center justify-between gap-2 z-40">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 text-slate-950 font-black text-sm flex items-center justify-center shadow">414</div>
+      <div>
+        <h1 class="text-sm sm:text-base font-bold tracking-tight text-amber-300 leading-none">414 扑克 · 联机版</h1>
+        <p id="roomSubtitle" class="text-[11px] text-emerald-200/75 mt-0.5">Socket.IO 权威房间服务器</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3 bg-black/30 px-3 py-1.5 rounded-xl border border-white/10 text-xs">
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span class="text-emerald-200">我方</span>
+        <span id="teamALevelBadge" class="px-1.5 py-0.5 rounded bg-emerald-500/25 text-emerald-300 font-bold">2</span>
+      </div>
+      <span class="text-white/25">|</span>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+        <span class="text-rose-200">对方</span>
+        <span id="teamBLevelBadge" class="px-1.5 py-0.5 rounded bg-rose-500/25 text-rose-300 font-bold">2</span>
+      </div>
+      <span class="text-white/25">|</span>
+      <div class="flex items-center gap-1">
+        <span class="text-amber-200/80">主牌:</span>
+        <span id="activeLevelBadge" class="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-black">2</span>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1.5">
+      <button id="lobbyBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-semibold transition flex items-center gap-1.5 border border-emerald-400/40">
+        <span id="connDot" class="w-2 h-2 rounded-full bg-amber-300"></span>
+        <span id="connText">房间大厅</span>
+      </button>
+      <button id="soundToggleBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-medium transition flex items-center gap-1">
+        <span id="soundIcon">🔊</span>
+        <span class="hidden sm:inline" id="soundText">音效开</span>
+      </button>
+      <button id="rulesBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-medium transition">规则</button>
+    </div>
+  </header>
+
+  <!-- Main Table -->
+  <main class="flex-1 flex flex-col justify-between p-2 sm:p-4 max-w-6xl w-full mx-auto relative">
+    <!-- Top Player (Dom 2) -->
+    <section class="flex flex-col items-center">
+      <div id="seatPod2" class="flex items-center gap-3 bg-black/35 border border-white/15 rounded-2xl px-3.5 py-2 backdrop-blur-sm transition">
+        <div class="w-9 h-9 rounded-full bg-emerald-600/80 border border-emerald-300/50 flex items-center justify-center font-bold text-sm">友</div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <span id="seatName2" class="text-xs sm:text-sm font-bold text-emerald-200">队友</span>
+            <span id="seatBadge2" class="text-[11px] px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-semibold">-</span>
+          </div>
+          <div id="seatStatus2" class="text-[11px] text-amber-300/90 mt-0.5 min-h-[16px]"></div>
+        </div>
+        <div class="hidden sm:flex items-center gap-0.5 ml-1">
+          <div class="card-back-mini"></div><div class="card-back-mini -ml-2.5"></div><div class="card-back-mini -ml-2.5"></div>
+        </div>
+      </div>
+      <div id="seatPlay2" class="mt-2 min-h-[70px] flex items-center justify-center"></div>
+    </section>
+
+    <!-- Middle Row -->
+    <section class="grid grid-cols-12 items-center gap-2 my-1 flex-1">
+      <div class="col-span-4 sm:col-span-3 flex flex-col items-start">
+        <div id="seatPod3" class="flex flex-col sm:flex-row items-start sm:items-center gap-2 bg-black/35 border border-white/15 rounded-2xl px-3 py-2 backdrop-blur-sm transition w-full sm:w-auto">
+          <div class="w-8 h-8 rounded-full bg-rose-600/80 border border-rose-300/50 flex items-center justify-center font-bold text-xs shrink-0">左</div>
+          <div>
+            <div class="flex items-center gap-1 flex-wrap">
+              <span id="seatName3" class="text-xs font-bold text-rose-200">下家</span>
+              <span id="seatBadge3" class="text-[11px] px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-semibold">-</span>
+            </div>
+            <div id="seatStatus3" class="text-[11px] text-amber-300/90 mt-0.5 min-h-[16px]"></div>
+          </div>
+        </div>
+        <div id="seatPlay3" class="mt-2 min-h-[68px] flex items-center justify-start pl-1"></div>
+      </div>
+
+      <div class="col-span-4 sm:col-span-6 flex flex-col items-center justify-center text-center px-1">
+        <div class="bg-black/30 border border-amber-400/25 rounded-2xl px-3 py-2.5 backdrop-blur-sm max-w-sm w-full">
+          <div id="tableStateLabel" class="text-xs font-semibold text-amber-300">请先创建或加入房间</div>
+          <div id="tablePlayDesc" class="text-[11px] text-emerald-100/80 mt-0.5">点击上方「房间大厅」开始联机</div>
+        </div>
+        <div id="interruptBox" class="hidden mt-2.5 bg-amber-950/90 border-2 border-amber-400 rounded-2xl p-3 shadow-2xl max-w-xs w-full pop-in">
+          <div id="interruptTitle" class="text-xs font-bold text-amber-300 mb-2">可以拦截！</div>
+          <div id="interruptButtons" class="flex flex-wrap items-center justify-center gap-2"></div>
+        </div>
+      </div>
+
+      <div class="col-span-4 sm:col-span-3 flex flex-col items-end">
+        <div id="seatPod1" class="flex flex-col sm:flex-row-reverse items-end sm:items-center gap-2 bg-black/35 border border-white/15 rounded-2xl px-3 py-2 backdrop-blur-sm transition w-full sm:w-auto text-right">
+          <div class="w-8 h-8 rounded-full bg-rose-600/80 border border-rose-300/50 flex items-center justify-center font-bold text-xs shrink-0">右</div>
+          <div>
+            <div class="flex items-center justify-end gap-1 flex-wrap">
+              <span id="seatBadge1" class="text-[11px] px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-semibold">-</span>
+              <span id="seatName1" class="text-xs font-bold text-rose-200">上家</span>
+            </div>
+            <div id="seatStatus1" class="text-[11px] text-amber-300/90 mt-0.5 min-h-[16px]"></div>
+          </div>
+        </div>
+        <div id="seatPlay1" class="mt-2 min-h-[68px] flex items-center justify-end pr-1"></div>
+      </div>
+    </section>
+
+    <!-- Bottom Player (Dom 0) -->
+    <section class="flex flex-col items-center w-full mt-1">
+      <div id="seatPlay0" class="mb-2 min-h-[68px] flex items-center justify-center"></div>
+      <div class="flex flex-wrap items-center justify-center gap-2 mb-1.5">
+        <button id="playBtn" type="button" disabled class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-400 text-slate-950 font-bold text-xs sm:text-sm transition shadow-lg">出牌</button>
+        <button id="chaBtn" type="button" class="hidden px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs sm:text-sm transition shadow-lg">叉!</button>
+        <button id="gouBtn" type="button" class="hidden px-4 py-2 rounded-xl bg-purple-500 hover:bg-purple-400 text-white font-bold text-xs sm:text-sm transition shadow-lg">勾!</button>
+        <button id="hintBtn" type="button" disabled class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold text-xs sm:text-sm transition">提示</button>
+        <button id="passBtn" type="button" disabled class="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 disabled:bg-slate-800 disabled:text-slate-500 text-white font-semibold text-xs sm:text-sm transition">不出</button>
+        <button id="clearSelBtn" type="button" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-medium transition">重选</button>
+        <button id="sortBtn" type="button" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-medium transition">理牌</button>
+      </div>
+      <div class="flex items-center gap-3 text-xs mb-1">
+        <div id="seatPod0" class="flex items-center gap-2 px-3 py-1 rounded-full bg-black/35 border border-white/15 transition">
+          <span id="seatName0" class="font-bold text-emerald-300">你</span>
+          <span id="seatBadge0" class="px-1.5 py-0.5 rounded bg-white/10 font-semibold">-</span>
+          <span id="seatStatus0" class="text-amber-300"></span>
+        </div>
+        <span id="selectionHint" class="text-amber-200/90 font-medium"></span>
+      </div>
+      <div id="playerHand" class="hand-scroll w-full max-w-5xl min-h-[118px]"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 bg-slate-900/95 border border-amber-400/50 text-amber-200 px-4 py-2 rounded-xl text-xs font-semibold shadow-xl opacity-0 pointer-events-none transition-opacity duration-200 z-50"></div>
+
+  <!-- Lobby Modal -->
+  <div id="lobbyModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-emerald-400/40 rounded-2xl max-w-md w-full p-5 shadow-2xl pop-in">
+      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+        <div>
+          <h2 class="text-base font-extrabold text-emerald-300">414 联机房间大厅</h2>
+          <p class="text-[11px] text-slate-400 mt-0.5">权威服务器防作弊 · 支持 1~4 人（空位 AI 补齐）</p>
+        </div>
+        <button id="closeLobbyBtn" type="button" class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs">关闭</button>
+      </div>
+      <div class="mt-3 space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-300 mb-1 font-medium">你的昵称</label>
+          <input id="nicknameInput" type="text" maxlength="10" value="玩家" class="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-emerald-400" />
+        </div>
+
+        <div id="lobbySetupView" class="space-y-3">
+          <details class="bg-black/25 rounded-xl px-3 py-2 border border-white/10">
+            <summary class="cursor-pointer text-slate-300 font-medium">高级：自定义后端服务器地址（前后端分离时填写）</summary>
+            <input id="serverUrlInput" type="text" placeholder="留空默认连接当前网站服务器" class="mt-2 w-full px-3 py-1.5 rounded-lg bg-black/40 border border-white/15 text-white text-xs" />
+          </details>
+          <button id="createRoomBtn" type="button" class="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition">创建新房间</button>
+          <div class="flex gap-2">
+            <input id="joinRoomInput" type="text" placeholder="输入房间号 (如 414-XXXX)" class="flex-1 px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-white uppercase focus:outline-none focus:border-emerald-400" />
+            <button id="joinRoomBtn" type="button" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition shrink-0">加入房间</button>
+          </div>
+        </div>
+
+        <div id="lobbyRoomView" class="hidden space-y-3">
+          <div class="bg-emerald-950/50 border border-emerald-500/30 rounded-xl p-3 flex items-center justify-between gap-2">
+            <div>
+              <div class="text-[11px] text-emerald-200/80">房间号</div>
+              <div id="roomCodeDisplay" class="text-base font-black text-amber-300 tracking-wider">-</div>
+            </div>
+            <button id="copyRoomBtn" type="button" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition">复制房间号</button>
+          </div>
+          <div id="lobbySeatList" class="bg-black/35 border border-white/10 rounded-xl p-3 space-y-1.5"></div>
+          <button id="startGameBtn" type="button" class="hidden w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition">开始对局</button>
+          <div id="waitHostHint" class="hidden text-center text-amber-200/80">等待房主点击「开始对局」...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Round Summary Modal -->
+  <div id="roundModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-amber-400/40 rounded-2xl max-w-md w-full p-5 shadow-2xl pop-in">
+      <h2 id="roundModalTitle" class="text-lg font-extrabold text-amber-300">本局结束</h2>
+      <p id="roundModalSubtitle" class="text-xs text-slate-300 mt-1"></p>
+      <div id="roundModalBody" class="mt-4 space-y-2 text-xs"></div>
+      <div class="mt-5 flex justify-end">
+        <button id="nextRoundBtn" type="button" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-400 text-slate-950 font-bold text-sm transition">下一局</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rules Modal -->
+  <div id="rulesModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+    <div class="bg-slate-900 border border-white/20 rounded-2xl max-w-lg w-full max-h-[85dvh] overflow-y-auto p-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+        <h2 class="text-base font-extrabold text-amber-300">414 扑克牌规则</h2>
+        <button id="closeRulesBtn" type="button" class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs">关闭</button>
+      </div>
+      <div class="mt-3 space-y-2.5 text-xs text-slate-200 leading-relaxed">
+        <p>两副牌共 108 张，四人围桌，对家为队友。从 2 升级至 A，打 A 局赢得 2 分即获整场胜利。</p>
+        <p><strong>单牌</strong>：大王＞小王＞主牌＞2＞A＞K＞…＞3；<strong>炸弹</strong>：火箭(A44)＞5+大炸弹＞双王＞4大炸弹＞小炸弹(3张)。</p>
+        <p><strong>叉</strong>：别人出单牌时同点数对子可叉，需 4 张及以上炸弹或勾才能拦截。<strong>勾</strong>：叉后同点数单牌可勾，勾后可继续叉或勾，且只有火箭(A44)能拦截勾。</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const LEVELS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+      const BASE_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'SJ', 'BJ'];
+      const STRAIGHT_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+      let socket = null;
+      const clientState = {
+        roomId: '',
+        isHost: false,
+        mySeat: 0,
+        myHand: [],
+        handCounts: [0, 0, 0, 0],
+        seatPlayers: [],
+        teamLevels: [0, 0],
+        activeLevel: '2',
+        currentTurn: 0,
+        tablePlay: null,
+        finishOrder: [],
+        lastPlaysBySeat: [null, null, null, null],
+        roundActive: false,
+        waitingInterrupt: false,
+        selectedIds: new Set(),
+        sortMode: 'power'
+      };
+
+      const Sound = {
+        enabled: true, ctx: null,
+        playTone(freq, duration = 0.09, type = 'triangle', gainVal = 0.08, delay = 0) {
+          if (!this.enabled) return;
+          if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (!this.ctx) return;
+          if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+          const now = this.ctx.currentTime + delay;
+          const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
+          osc.type = type; osc.frequency.setValueAtTime(freq, now);
+          gain.gain.setValueAtTime(gainVal, now); gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+          osc.connect(gain); gain.connect(this.ctx.destination);
+          osc.start(now); osc.stop(now + duration);
+        },
+        cardClick() { this.playTone(520, 0.04, 'sine', 0.04); },
+        playCard() { this.playTone(340, 0.07, 'triangle', 0.08); },
+        win() { [523, 659, 784, 1046].forEach((f, i) => this.playTone(f, 0.16, 'triangle', 0.08, i * 0.09)); }
+      };
+
+      function getRankPower(rank, activeLevel) {
+        if (rank === 'BJ') return 100;
+        if (rank === 'SJ') return 99;
+        if (rank === activeLevel) return 98;
+        return BASE_RANK_ORDER.indexOf(rank);
+      }
+
+      function sortHand(hand) {
+        return hand.sort((a, b) => {
+          const diff = clientState.sortMode === 'power'
+            ? getRankPower(b.rank, clientState.activeLevel) - getRankPower(a.rank, clientState.activeLevel)
+            : BASE_RANK_ORDER.indexOf(b.rank) - BASE_RANK_ORDER.indexOf(a.rank);
+          return diff !== 0 ? diff : a.suit.localeCompare(b.suit);
+        });
+      }
+
+      function evaluateCards(cards, activeLevel) {
+        const n = cards.length;
+        if (n === 0) return null;
+        const counts = {};
+        for (const c of cards) counts[c.rank] = (counts[c.rank] || 0) + 1;
+        const uniqueRanks = Object.keys(counts);
+        if (n === 3 && counts['A'] === 1 && counts['4'] === 2) return { type: 'rocket', label: '火箭 (A44)', isBomb: true, bombTier: 100, power: 9999 };
+        if (n === 2 && cards.every(c => c.isJoker)) return { type: 'double_joker', label: '双王', isBomb: true, bombTier: 4.5, power: cards.reduce((s, c) => s + (c.rank === 'BJ' ? 2 : 1), 0) };
+        if (cards.some(c => c.isJoker)) return n === 1 ? { type: 'single', label: cards[0].rank === 'BJ' ? '大王' : '小王', rank: cards[0].rank, isBomb: false, power: getRankPower(cards[0].rank, activeLevel) } : null;
+        if (n === 1) return { type: 'single', label: `单牌 ${cards[0].rank}`, rank: cards[0].rank, isBomb: false, power: getRankPower(cards[0].rank, activeLevel) };
+        if (uniqueRanks.length === 1) {
+          const r = uniqueRanks[0], p = getRankPower(r, activeLevel);
+          if (n === 2) return { type: 'pair', label: `对子 ${r}${r}`, rank: r, isBomb: false, power: p };
+          if (n === 3) return { type: 'small_bomb', label: `小炸弹 ${r}×3`, rank: r, isBomb: true, bombTier: 3, power: p };
+          if (n >= 4) return { type: 'big_bomb', label: `${n}张大炸弹 (${r})`, rank: r, count: n, isBomb: true, bombTier: n, power: p };
+        }
+        if (n >= 3 && uniqueRanks.length === n) {
+          const idxs = uniqueRanks.map(r => STRAIGHT_ORDER.indexOf(r)).sort((a, b) => a - b);
+          if (idxs[0] !== -1 && idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1)) {
+            return { type: 'single_dragon', label: `单龙 (${STRAIGHT_ORDER[idxs[0]]}~${STRAIGHT_ORDER[idxs[idxs.length - 1]]})`, length: n, isBomb: false, power: idxs[idxs.length - 1] };
+          }
+        }
+        if (n >= 6 && n % 2 === 0 && uniqueRanks.every(r => counts[r] === 2)) {
+          const idxs = uniqueRanks.map(r => STRAIGHT_ORDER.indexOf(r)).sort((a, b) => a - b);
+          if (idxs.length >= 3 && idxs[0] !== -1 && idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1)) {
+            return { type: 'double_dragon', label: `双龙 (${STRAIGHT_ORDER[idxs[0]]}~${STRAIGHT_ORDER[idxs[idxs.length - 1]]})`, length: idxs.length, isBomb: false, power: idxs[idxs.length - 1] };
+          }
+        }
+        return null;
+      }
+
+      function checkPlayAgainstTable(candidateEval, tablePlay, seat) {
+        if (!candidateEval) return { valid: false, reason: '无效牌型' };
+        if (!tablePlay) return { valid: true, mode: 'normal' };
+        const topEval = tablePlay.eval, topMode = tablePlay.mode;
+        if (tablePlay.seat !== seat) {
+          if ((topMode === 'normal' && topEval.type === 'single' && !['SJ', 'BJ'].includes(topEval.rank)) || topMode === 'gou') {
+            if (candidateEval.type === 'pair' && candidateEval.rank === topEval.rank) return { valid: true, mode: 'cha' };
+          }
+          if ((topMode === 'cha' || topMode === 'gou') && candidateEval.type === 'single' && candidateEval.rank === topEval.rank) {
+            return { valid: true, mode: 'gou' };
+          }
+        }
+        if (topMode === 'gou') return candidateEval.type === 'rocket' ? { valid: true, mode: 'normal' } : { valid: false, reason: '勾只能被火箭或叉/勾拦截' };
+        if (topMode === 'cha') return (candidateEval.isBomb && candidateEval.bombTier >= 4) ? { valid: true, mode: 'normal' } : { valid: false, reason: '叉只能用勾或4张及以上炸弹拦截' };
+        if (candidateEval.isBomb) {
+          if (!topEval.isBomb || candidateEval.bombTier > topEval.bombTier || (candidateEval.bombTier === topEval.bombTier && candidateEval.power > topEval.power)) {
+            return { valid: true, mode: 'normal' };
+          }
+          return { valid: false, reason: '炸弹不够大' };
+        }
+        if (topEval.isBomb) return { valid: false, reason: '须用更大的炸弹拦截' };
+        if (candidateEval.type !== topEval.type) return { valid: false, reason: '牌型不匹配' };
+        if ((candidateEval.type === 'single_dragon' || candidateEval.type === 'double_dragon') && candidateEval.length !== topEval.length) {
+          return { valid: false, reason: '龙的长度必须相同' };
+        }
+        return candidateEval.power > topEval.power ? { valid: true, mode: 'normal' } : { valid: false, reason: '点数不够大' };
+      }
+
+      function absToDom(absSeat) { return (absSeat - clientState.mySeat + 4) % 4; }
+      function getSeatLabel(absSeat) {
+        const p = clientState.seatPlayers[absSeat];
+        if (!p) return `座位${absSeat + 1}`;
+        if (absSeat === clientState.mySeat) return `${p.name} (你)`;
+        if (absSeat === (clientState.mySeat + 2) % 4) return `${p.name} (队友)`;
+        return p.name;
+      }
+
+      function createCardElement(card, { clickable = false, selected = false, mini = false } = {}) {
+        const el = document.createElement('div');
+        const isLevel = card.rank === clientState.activeLevel;
+        el.className = `poker-card ${card.color} ${selected ? 'selected' : ''} ${mini ? 'played-card' : ''} ${isLevel ? 'level-highlight' : ''}`;
+        if (card.isJoker) {
+          const label = card.rank === 'BJ' ? '大王' : '小王';
+          el.innerHTML = `<div class="text-[10px] sm:text-xs font-black leading-tight">${card.rank === 'BJ' ? '大' : '小'}<br>王</div><div class="text-center text-base sm:text-lg font-black">${card.rank === 'BJ' ? '🃏' : '🂿'}</div><div class="text-[9px] font-bold text-right opacity-80">${label}</div>`;
+        } else {
+          el.innerHTML = `${isLevel ? '<span class="level-pip">主</span>' : ''}<div class="leading-none"><div class="text-xs sm:text-sm font-black">${card.rank}</div><div class="text-[11px] sm:text-xs">${card.suit}</div></div><div class="text-center text-base sm:text-xl leading-none opacity-90">${card.suit}</div><div class="leading-none text-right rotate-180"><div class="text-xs sm:text-sm font-black">${card.rank}</div></div>`;
+        }
+        if (clickable) {
+          el.addEventListener('click', () => {
+            if (!clientState.roundActive) return;
+            Sound.cardClick();
+            if (clientState.selectedIds.has(card.id)) clientState.selectedIds.delete(card.id);
+            else clientState.selectedIds.add(card.id);
+            renderHandAndControls();
+          });
+        }
+        return el;
+      }
+
+      function renderAll() {
+        const myTeam = clientState.mySeat % 2;
+        document.getElementById('teamALevelBadge').textContent = LEVELS[clientState.teamLevels[myTeam]];
+        document.getElementById('teamBLevelBadge').textContent = LEVELS[clientState.teamLevels[1 - myTeam]];
+        document.getElementById('activeLevelBadge').textContent = clientState.activeLevel;
+
+        for (let absS = 0; absS < 4; absS++) {
+          const domS = absToDom(absS);
+          const count = clientState.handCounts[absS] || 0;
+          document.getElementById(`seatName${domS}`).textContent = getSeatLabel(absS);
+          document.getElementById(`seatBadge${domS}`).textContent = count > 0 ? `${count}张` : '已出完';
+          document.getElementById(`seatPod${domS}`).classList.toggle('active-turn-ring', clientState.roundActive && !clientState.waitingInterrupt && clientState.currentTurn === absS);
+
+          const finIdx = clientState.finishOrder.indexOf(absS);
+          document.getElementById(`seatStatus${domS}`).textContent = finIdx !== -1
+            ? `🏆 第 ${finIdx + 1} 名`
+            : (clientState.roundActive && !clientState.waitingInterrupt && clientState.currentTurn === absS ? '思考出牌中...' : '');
+
+          const playBox = document.getElementById(`seatPlay${domS}`);
+          playBox.innerHTML = '';
+          const lp = clientState.lastPlaysBySeat[absS];
+          if (lp) {
+            if (lp.pass) playBox.innerHTML = `<span class="px-2.5 py-1 rounded-lg bg-black/40 text-slate-300 text-xs font-semibold">不出</span>`;
+            else {
+              const stack = document.createElement('div');
+              stack.className = 'played-stack pop-in';
+              lp.cards.forEach(c => stack.appendChild(createCardElement(c, { mini: true })));
+              playBox.appendChild(stack);
+            }
+          }
+        }
+
+        const labelEl = document.getElementById('tableStateLabel');
+        const descEl = document.getElementById('tablePlayDesc');
+        if (clientState.tablePlay) {
+          const prefix = clientState.tablePlay.mode === 'cha' ? '⚡ 叉 · ' : clientState.tablePlay.mode === 'gou' ? '⚡ 勾 · ' : '';
+          labelEl.textContent = `${prefix}${getSeatLabel(clientState.tablePlay.seat)} 出牌`;
+          descEl.textContent = clientState.tablePlay.eval.label;
+        } else if (clientState.roundActive) {
+          labelEl.textContent = `${getSeatLabel(clientState.currentTurn)} 领出`;
+          descEl.textContent = '桌面已清空，可出任意合法牌型';
+        }
+        renderHandAndControls();
+      }
+
+      function renderHandAndControls() {
+        const handEl = document.getElementById('playerHand');
+        handEl.innerHTML = '';
+        for (const c of clientState.myHand) {
+          handEl.appendChild(createCardElement(c, { clickable: true, selected: clientState.selectedIds.has(c.id) }));
+        }
+        const isMyTurn = clientState.roundActive && !clientState.waitingInterrupt && clientState.currentTurn === clientState.mySeat && clientState.myHand.length > 0;
+        const selected = clientState.myHand.filter(c => clientState.selectedIds.has(c.id));
+        const ev = evaluateCards(selected, clientState.activeLevel);
+        const chk = ev ? checkPlayAgainstTable(ev, clientState.tablePlay, clientState.mySeat) : { valid: false };
+
+        const playBtn = document.getElementById('playBtn');
+        const chaBtn = document.getElementById('chaBtn');
+        const gouBtn = document.getElementById('gouBtn');
+        playBtn.disabled = !(isMyTurn && chk.valid && chk.mode === 'normal');
+        chaBtn.classList.add('hidden'); gouBtn.classList.add('hidden');
+        if (isMyTurn && chk.valid) {
+          if (chk.mode === 'cha') { chaBtn.classList.remove('hidden'); playBtn.disabled = true; }
+          if (chk.mode === 'gou') { gouBtn.classList.remove('hidden'); playBtn.disabled = true; }
+        }
+        document.getElementById('hintBtn').disabled = !isMyTurn;
+        document.getElementById('passBtn').disabled = !(isMyTurn && clientState.tablePlay !== null);
+        const hintEl = document.getElementById('selectionHint');
+        if (selected.length === 0) hintEl.textContent = isMyTurn ? '请选择要出的牌' : '';
+        else if (!ev) hintEl.textContent = '所选牌型不合法';
+        else if (clientState.tablePlay && !chk.valid) hintEl.textContent = `${ev.label}（${chk.reason}）`;
+        else hintEl.textContent = `${chk.mode === 'cha' ? '【可叉】' : chk.mode === 'gou' ? '【可勾】' : '✓ '}${ev.label}`;
+      }
+
+      function showInterruptBox(opts) {
+        const box = document.getElementById('interruptBox');
+        const btns = document.getElementById('interruptButtons');
+        btns.innerHTML = '';
+        opts.forEach(opt => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shadow';
+          b.textContent = opt.mode === 'cha' ? `立即叉 (${opt.eval.rank}${opt.eval.rank})` : `立即勾 (${opt.eval.rank})`;
+          b.addEventListener('click', () => {
+            box.classList.add('hidden');
+            socket.emit('playCards', { cardIds: opt.cards.map(c => c.id) });
+          });
+          btns.appendChild(b);
+        });
+        const skip = document.createElement('button');
+        skip.type = 'button';
+        skip.className = 'px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white font-semibold text-xs';
+        skip.textContent = '放弃拦截';
+        skip.addEventListener('click', () => {
+          box.classList.add('hidden');
+          socket.emit('skipInterrupt');
+        });
+        btns.appendChild(skip);
+        box.classList.remove('hidden');
+      }
+
+      let toastTimer = null;
+      function showToast(msg) {
+        const el = document.getElementById('toast');
+        el.textContent = msg;
+        el.classList.remove('opacity-0');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.add('opacity-0'), 2400);
+      }
+
+      function ensureSocket() {
+        const customUrl = (document.getElementById('serverUrlInput').value || '').trim();
+        if (socket && socket.connected) return socket;
+        if (socket) socket.disconnect();
+        socket = customUrl ? io(customUrl) : io();
+
+        socket.on('connect', () => {
+          document.getElementById('connDot').className = 'w-2 h-2 rounded-full bg-emerald-300';
+        });
+        socket.on('errorMsg', (msg) => showToast(msg));
+        socket.on('stateSync', (data) => {
+          clientState.roomId = data.roomId;
+          clientState.isHost = data.isHost;
+          clientState.mySeat = data.mySeat;
+          clientState.myHand = sortHand(data.myHand);
+          clientState.handCounts = data.handCounts;
+          clientState.seatPlayers = data.seatPlayers;
+          clientState.teamLevels = data.teamLevels;
+          clientState.activeLevel = data.activeLevel;
+          clientState.currentTurn = data.currentTurn;
+          clientState.tablePlay = data.tablePlay;
+          clientState.finishOrder = data.finishOrder;
+          clientState.lastPlaysBySeat = data.lastPlaysBySeat;
+          clientState.roundActive = data.roundActive;
+          clientState.waitingInterrupt = data.waitingInterrupt;
+          clientState.selectedIds.clear();
+
+          document.getElementById('roomSubtitle').textContent = `房间 ${data.roomId} · 第 ${data.roundNumber} 局`;
+          document.getElementById('connText').textContent = `房间 ${data.roomId}`;
+          document.getElementById('lobbySetupView').classList.add('hidden');
+          document.getElementById('lobbyRoomView').classList.remove('hidden');
+          document.getElementById('roomCodeDisplay').textContent = data.roomId;
+          document.getElementById('lobbySeatList').innerHTML = data.seatPlayers.map((p, i) => `
+            <div class="flex justify-between bg-black/30 px-2.5 py-1.5 rounded-lg border border-white/10">
+              <span>座位 ${i + 1} · ${p.name}${i === data.mySeat ? ' (你)' : ''}</span>
+              <span class="text-slate-300">${i % 2 === 0 ? '一队' : '二队'} · ${p.isAI ? 'AI补位' : '在线'}</span>
+            </div>
+          `).join('');
+
+          document.getElementById('startGameBtn').classList.toggle('hidden', !data.isHost || data.roundActive);
+          document.getElementById('waitHostHint').classList.toggle('hidden', data.isHost || data.roundActive);
+
+          if (data.roundActive) {
+            document.getElementById('lobbyModal').classList.add('hidden');
+            document.getElementById('lobbyModal').classList.remove('flex');
+          }
+          if (data.toastMsg) showToast(data.toastMsg);
+          if (data.interruptOpts && data.interruptOpts.length > 0) showInterruptBox(data.interruptOpts);
+          else document.getElementById('interruptBox').classList.add('hidden');
+
+          renderAll();
+
+          const roundModal = document.getElementById('roundModal');
+          if (data.roundSummary) {
+            const rs = data.roundSummary;
+            const myTeam = clientState.mySeat % 2;
+            const teamName = rs.winningTeam === myTeam ? '我方' : '对方';
+            if (rs.matchWon) Sound.win();
+            document.getElementById('roundModalTitle').textContent = rs.matchWon ? `🏆 ${teamName} 赢得整场大局！` : `第 ${rs.roundNum} 局结束`;
+            document.getElementById('roundModalSubtitle').textContent = rs.matchWon
+              ? '打 A 局赢得 2 分夺冠！'
+              : `赢家：${teamName} · 得 ${rs.points} 分（下一局主牌：${rs.activeLevel}）`;
+            document.getElementById('roundModalBody').innerHTML = `
+              <div class="bg-black/35 rounded-xl p-3 border border-white/10 space-y-1">
+                ${rs.finishOrder.map((s, idx) => `<div class="flex justify-between"><span>第 ${idx + 1} 名：${getSeatLabel(s)}</span><span class="text-emerald-300">已走完</span></div>`).join('')}
+                ${rs.remaining.map(r => `<div class="flex justify-between text-slate-400"><span>未走完：${getSeatLabel(r.seat)}</span><span>剩 ${r.count} 张</span></div>`).join('')}
+              </div>
+            `;
+            const nextBtn = document.getElementById('nextRoundBtn');
+            nextBtn.disabled = !data.isHost;
+            nextBtn.textContent = data.isHost ? (rs.matchWon ? '重新开局' : '进入下一局') : '等待房主开启下一局...';
+            roundModal.classList.remove('hidden');
+            roundModal.classList.add('flex');
+          } else {
+            roundModal.classList.add('hidden');
+            roundModal.classList.remove('flex');
+          }
+        });
+        return socket;
+      }
+
+      // Bindings
+      document.getElementById('createRoomBtn').addEventListener('click', () => {
+        const s = ensureSocket();
+        s.emit('createRoom', { name: document.getElementById('nicknameInput').value });
+      });
+      document.getElementById('joinRoomBtn').addEventListener('click', () => {
+        const roomId = document.getElementById('joinRoomInput').value;
+        if (!roomId.trim()) return showToast('请输入房间号');
+        const s = ensureSocket();
+        s.emit('joinRoom', { roomId, name: document.getElementById('nicknameInput').value });
+      });
+      document.getElementById('startGameBtn').addEventListener('click', () => socket?.emit('startGame'));
+      document.getElementById('nextRoundBtn').addEventListener('click', () => socket?.emit('startGame'));
+      document.getElementById('playBtn').addEventListener('click', () => {
+        const ids = clientState.myHand.filter(c => clientState.selectedIds.has(c.id)).map(c => c.id);
+        Sound.playCard();
+        socket?.emit('playCards', { cardIds: ids });
+      });
+      document.getElementById('chaBtn').addEventListener('click', () => {
+        const ids = clientState.myHand.filter(c => clientState.selectedIds.has(c.id)).map(c => c.id);
+        socket?.emit('playCards', { cardIds: ids });
+      });
+      document.getElementById('gouBtn').addEventListener('click', () => {
+        const ids = clientState.myHand.filter(c => clientState.selectedIds.has(c.id)).map(c => c.id);
+        socket?.emit('playCards', { cardIds: ids });
+      });
+      document.getElementById('passBtn').addEventListener('click', () => socket?.emit('passTurn'));
+      document.getElementById('clearSelBtn').addEventListener('click', () => { clientState.selectedIds.clear(); renderHandAndControls(); });
+      document.getElementById('sortBtn').addEventListener('click', () => {
+        clientState.sortMode = clientState.sortMode === 'power' ? 'rank' : 'power';
+        sortHand(clientState.myHand);
+        renderHandAndControls();
+      });
+      document.getElementById('hintBtn').addEventListener('click', () => {
+        // Simple single/pair hint
+        const hand = clientState.myHand;
+        const candidates = [];
+        for (let i = 0; i < hand.length; i++) {
+          const ev = evaluateCards([hand[i]], clientState.activeLevel);
+          if (ev && checkPlayAgainstTable(ev, clientState.tablePlay, clientState.mySeat).valid) candidates.push([hand[i]]);
+          if (i + 1 < hand.length && hand[i].rank === hand[i + 1].rank) {
+            const ev2 = evaluateCards([hand[i], hand[i + 1]], clientState.activeLevel);
+            if (ev2 && checkPlayAgainstTable(ev2, clientState.tablePlay, clientState.mySeat).valid) candidates.push([hand[i], hand[i + 1]]);
+          }
+        }
+        if (candidates.length === 0) return showToast('暂未匹配到单牌/对子提示，可尝试炸弹或不出');
+        clientState.selectedIds = new Set(candidates[candidates.length - 1].map(c => c.id));
+        renderHandAndControls();
+      });
+      document.getElementById('copyRoomBtn').addEventListener('click', () => {
+        const code = clientState.roomId;
+        if (!code) return;
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(code).then(() => showToast('房间号已复制！')).catch(() => {});
+        else { const inp = document.createElement('input'); inp.value = code; document.body.appendChild(inp); inp.select(); document.execCommand('copy'); document.body.removeChild(inp); showToast('房间号已复制！'); }
+      });
+      document.getElementById('lobbyBtn').addEventListener('click', () => { document.getElementById('lobbyModal').classList.remove('hidden'); document.getElementById('lobbyModal').classList.add('flex'); });
+      document.getElementById('closeLobbyBtn').addEventListener('click', () => { document.getElementById('lobbyModal').classList.add('hidden'); document.getElementById('lobbyModal').classList.remove('flex'); });
+      document.getElementById('rulesBtn').addEventListener('click', () => { document.getElementById('rulesModal').classList.remove('hidden'); document.getElementById('rulesModal').classList.add('flex'); });
+      document.getElementById('closeRulesBtn').addEventListener('click', () => { document.getElementById('rulesModal').classList.add('hidden'); document.getElementById('rulesModal').classList.remove('flex'); });
+      document.getElementById('soundToggleBtn').addEventListener('click', () => {
+        Sound.enabled = !Sound.enabled;
+        document.getElementById('soundIcon').textContent = Sound.enabled ? '🔊' : '🔇';
+        document.getElementById('soundText').textContent = Sound.enabled ? '音效开' : '音效关';
+      });
+    })();
+  </script>
+</body>
+</html>
